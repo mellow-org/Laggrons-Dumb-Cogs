@@ -1,15 +1,13 @@
 # Say by retke, aka El Laggron
-
-import discord
+import traceback
 import asyncio
 import logging
 import re
-
-from discord import app_commands
-
 from typing import TYPE_CHECKING, Optional
-from laggron_utils import close_logger
 
+import discord
+from discord import app_commands
+from laggron_utils import close_logger
 from redbot.core import checks, commands
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.tunnel import Tunnel
@@ -20,8 +18,49 @@ if TYPE_CHECKING:
 log = logging.getLogger("red.laggron.say")
 _ = Translator("Say", __file__)
 
-
 ROLE_MENTION_REGEX = re.compile(r"<@&(?P<id>[0-9]{17,19})>")
+
+emoji_cross = "<:org_crossmark2:966358688686288916>"
+emoji_check = "<:org_checkmark:966229530106810388>"
+
+
+async def stop_session_interaction(bot, session_interaction, user):
+    session_interaction.remove(user)
+    embed = discord.Embed(
+        title="Session Stopped.",
+        timestamp=discord.utils.utcnow(),
+        color=(await bot.get_embed_color(bot)),
+        description="I won't listen to messages anymore."
+    )
+    await user.send(embed=embed)
+
+
+class CloseSeshButton(discord.ui.View):
+    def __init__(self, bot, session_interaction, timeout=None):
+        self.bot = bot
+        self.session_interaction = session_interaction
+        super().__init__(timeout=timeout)
+
+    @discord.ui.button(label="End Session", style=discord.ButtonStyle.danger, emoji=emoji_cross)
+    async def closesesh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button.disabled = True
+        await interaction.response.send_message(content="Ending the session...", ephemeral=True)
+
+        try:
+            await stop_session_interaction(self.bot, self.session_interaction, interaction.user)
+        except Exception as e:
+            await interaction.response.followup(
+                content=f"An error occurred when stopping the session:\n```py\n{e}\n```",
+                ephemeral=True
+            )
+        await self.message.edit(view=self)
+
+    async def on_error(self, interaction, error, item):
+        traceback_msg = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
+        try:
+            await interaction.response.send_message(content=f"```py\n{traceback_msg}\n```")
+        except Exception as e:
+            pass
 
 
 @cog_i18n(_)
@@ -34,19 +73,19 @@ class Say(commands.Cog):
 
     def __init__(self, bot: "Red"):
         self.bot = bot
-        self.interaction = []
+        self.session_interaction = []
 
     __author__ = ["retke (El Laggron)"]
     __version__ = "2.0.1"
 
     async def say(
-        self,
-        ctx: commands.Context,
-        channel: Optional[discord.TextChannel],
-        text: str,
-        files: list,
-        mentions: discord.AllowedMentions = None,
-        delete: int = None,
+            self,
+            ctx: commands.Context,
+            channel: Optional[discord.TextChannel],
+            text: str,
+            files: list,
+            mentions: discord.AllowedMentions = None,
+            delete: int = None,
     ):
         if not channel:
             channel = ctx.channel
@@ -93,7 +132,7 @@ class Say(commands.Cog):
     @commands.command(name="say")
     @checks.admin_or_permissions(administrator=True)
     async def _say(
-        self, ctx: commands.Context, channel: Optional[discord.TextChannel], *, text: str = ""
+            self, ctx: commands.Context, channel: Optional[discord.TextChannel], *, text: str = ""
     ):
         """
         Make the bot say what you want in the desired channel.
@@ -112,12 +151,12 @@ class Say(commands.Cog):
     @commands.command(name="sayad")
     @checks.admin_or_permissions(administrator=True)
     async def _sayautodelete(
-        self,
-        ctx: commands.Context,
-        channel: Optional[discord.TextChannel],
-        delete_delay: int,
-        *,
-        text: str = "",
+            self,
+            ctx: commands.Context,
+            channel: Optional[discord.TextChannel],
+            delete_delay: int,
+            *,
+            text: str = "",
     ):
         """
         Same as say command, except it deletes the said message after a set number of seconds.
@@ -129,7 +168,7 @@ class Say(commands.Cog):
     @commands.command(name="sayd", aliases=["sd"])
     @checks.admin_or_permissions(administrator=True)
     async def _saydelete(
-        self, ctx: commands.Context, channel: Optional[discord.TextChannel], *, text: str = ""
+            self, ctx: commands.Context, channel: Optional[discord.TextChannel], *, text: str = ""
     ):
         """
         Same as say command, except it deletes your message.
@@ -154,7 +193,7 @@ class Say(commands.Cog):
     @commands.command(name="saym", aliases=["sm"])
     @checks.admin_or_permissions(administrator=True)
     async def _saymention(
-        self, ctx: commands.Context, channel: Optional[discord.TextChannel], *, text: str = ""
+            self, ctx: commands.Context, channel: Optional[discord.TextChannel], *, text: str = ""
     ):
         """
         Same as say command, except role and mass mentions are enabled.
@@ -204,12 +243,13 @@ class Say(commands.Cog):
             ctx, channel, text, files, mentions=discord.AllowedMentions(everyone=True, roles=True)
         )
 
-    @commands.command(name="interact")
+    @commands.command(name="interact", aliases=["intr"])
     @checks.admin_or_permissions(administrator=True)
     async def _interact(self, ctx: commands.Context, channel: discord.TextChannel = None):
         """Start receiving and sending messages as the bot through DM"""
 
-        u = ctx.author
+        u: commands.Context.author = ctx.author
+
         if channel is None:
             if isinstance(ctx.channel, discord.DMChannel):
                 await ctx.send(
@@ -222,60 +262,113 @@ class Say(commands.Cog):
             else:
                 channel = ctx.channel
 
-        if u in self.interaction:
+        if u in self.session_interaction:
             await ctx.send(_("A session is already running."))
             return
 
-        message = await u.send(
-            _(
-                "I will start sending you messages from {0}.\n"
-                "Just send me any message and I will send it in that channel.\n"
-                "React with ❌ on this message to end the session.\n"
-                "If no message was send or received in the last 5 minutes, "
-                "the request will time out and stop."
-            ).format(channel.mention)
+        session_embed = discord.Embed(
+            title="Session Started",
+            timestamp=discord.utils.utcnow(),
+            color=(await ctx.embed_colour())
         )
-        await message.add_reaction("❌")
-        self.interaction.append(u)
+        session_embed.description = f'I will start sending you messages from {channel.mention}.'
+        session_embed.add_field(
+            name="How does this work?",
+            value="- Just send me any message and I will send it in that channel.\n"
+                  "- To make the bot reply, reply to the embed message in the interaction.\n"
+                  "- You can also share images, videos and GIFs etc.",
+            inline=False
+        )
+        session_embed.add_field(
+            name="How to stop the session?",
+            value=f"- You can click on \"End Session\" button to stop the session.\n"
+                  "Note: If no message was send or received in the last 5 minutes, the request will time out and stop.",
+            inline=False
+        )
+        session_embed.add_field(name="Guild Name:", value=f"{channel.guild.name}", inline=True)
+        session_embed.add_field(name="Guild ID:", value=f'{channel.guild.id}')
+        session_embed.set_footer(text=f"Session Started by {ctx.author.name}")
+
+        view = CloseSeshButton(bot=self.bot, session_interaction=self.session_interaction)
+
+        view.message = await u.send(embed=session_embed, view=view)
+
+        session_start_msg = view.message
+
+        self.session_interaction.append(u)
 
         while True:
 
-            if u not in self.interaction:
+            if u not in self.session_interaction:
                 return
 
             try:
                 message = await self.bot.wait_for("message", timeout=300)
             except asyncio.TimeoutError:
                 await u.send(_("Request timed out. Session closed"))
-                self.interaction.remove(u)
+                self.session_interaction.remove(u)
                 return
 
             if message.author == u and isinstance(message.channel, discord.DMChannel):
+                if message.reference:
+                    try:
+                        ref_msg = await u.fetch_message(message.reference.message_id)
+                    except discord.NotFound:
+                        await message.channel.send("Failed to fetch message reference.")
+                        return
+
+                    reply_msg_id = ref_msg.embeds[0].footer.text
+
+                    try:
+                        msg_to_reply = await channel.fetch_message(reply_msg_id)
+                    except discord.NotFound:
+                        await message.channel.send("Failed to fetch the message to reply.")
+                        return
+
+                    reference = msg_to_reply
+                else:
+                    reference = None
+
                 files = await Tunnel.files_from_attatch(message)
-                if message.content.startswith(tuple(await self.bot.get_valid_prefixes())):
-                    return
-                await channel.send(message.content, files=files)
+                if not message.content.startswith(tuple(await self.bot.get_valid_prefixes())):
+                    async with channel.typing():
+                        await asyncio.sleep(2)
+                    try:
+                        await channel.send(message.content, files=files, reference=reference)
+                    except Exception as e:
+                        await message.add_reaction("⚠")
+                    else:
+                        await message.add_reaction(emoji_check)
+
             elif (
-                message.channel != channel
-                or message.author == channel.guild.me
-                or message.author == u
+                    message.channel != channel
+                    or message.author == channel.guild.me
+                    or message.author == u
             ):
                 pass
 
             else:
-                embed = discord.Embed()
+                view = discord.ui.View()
+                view.add_item(
+                    discord.ui.Button(style=discord.ButtonStyle.link, label="Jump To Message",
+                                      url=message.jump_url))
+                view.add_item(
+                    discord.ui.Button(style=discord.ButtonStyle.link, label="Jump To Top",
+                                      url=session_start_msg.jump_url))
+
+                embed = discord.Embed(timestamp=discord.utils.utcnow())
                 embed.set_author(
-                    name="{} | {}".format(str(message.author), message.author.id),
+                    name="{} - {}".format(str(message.author), message.author.id),
                     icon_url=message.author.avatar.url,
                 )
-                embed.set_footer(text=message.created_at.strftime("%d %b %Y %H:%M"))
+                embed.set_footer(text=message.id)
                 embed.description = message.content
                 embed.colour = message.author.color
 
                 if message.attachments != []:
                     embed.set_image(url=message.attachments[0].url)
 
-                await u.send(embed=embed)
+                await u.send(embed=embed, view=view)
 
     @commands.command(hidden=True)
     @checks.is_owner()
@@ -308,13 +401,13 @@ class Say(commands.Cog):
     @app_commands.default_permissions()
     @app_commands.guild_only()
     async def slash_say(
-        self,
-        interaction: discord.Interaction,
-        message: Optional[str] = "",
-        channel: Optional[discord.TextChannel] = None,
-        delete_delay: Optional[int] = None,
-        mentions: Optional[bool] = False,
-        file: Optional[discord.Attachment] = None,
+            self,
+            interaction: discord.Interaction,
+            message: Optional[str] = "",
+            channel: Optional[discord.TextChannel] = None,
+            delete_delay: Optional[int] = None,
+            mentions: Optional[bool] = False,
+            file: Optional[discord.Attachment] = None,
     ):
         guild = interaction.guild
         channel = channel or interaction.channel
@@ -340,7 +433,7 @@ class Say(commands.Cog):
             mentions = discord.AllowedMentions(
                 everyone=interaction.user.guild_permissions.mention_everyone,
                 roles=interaction.user.guild_permissions.mention_everyone
-                or [x for x in interaction.guild.roles if x.mentionable],
+                      or [x for x in interaction.guild.roles if x.mentionable],
             )
         else:
             mentions = None
@@ -363,16 +456,15 @@ class Say(commands.Cog):
             await interaction.response.defer(ephemeral=False)
             await interaction.followup.delete_message("@original")
 
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user in self.interaction:
-            channel = reaction.message.channel
-            if isinstance(channel, discord.DMChannel):
-                await self.stop_interaction(user)
-
     async def stop_interaction(self, user):
-        self.interaction.remove(user)
-        await user.send(_("Session closed"))
+        self.session_interaction.remove(user)
+        embed = discord.Embed(
+            title="Session Stopped.",
+            timestamp=discord.utils.utcnow(),
+            color=(await self.bot.get_embed_color(self)),
+            description="I won't send the messages anymore."
+        )
+        await user.send(embed=embed)
 
     async def cog_unload(self):
         log.debug("Unloading cog...")
