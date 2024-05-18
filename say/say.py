@@ -1,8 +1,8 @@
 # Say by retke, aka El Laggron
-import traceback
 import asyncio
 import logging
 import re
+import traceback
 from typing import TYPE_CHECKING, Optional
 
 import discord
@@ -348,13 +348,8 @@ class Say(commands.Cog):
                 pass
 
             else:
-                view = discord.ui.View()
-                view.add_item(
-                    discord.ui.Button(style=discord.ButtonStyle.link, label="Jump To Message",
-                                      url=message.jump_url))
-                view.add_item(
-                    discord.ui.Button(style=discord.ButtonStyle.link, label="Jump To Top",
-                                      url=session_start_msg.jump_url))
+                ping_content = f"<@{u.id}>" if any(
+                    member.id == self.bot.user.id for member in message.mentions) else None
 
                 embed = discord.Embed(timestamp=discord.utils.utcnow())
                 embed.set_author(
@@ -368,7 +363,15 @@ class Say(commands.Cog):
                 if message.attachments != []:
                     embed.set_image(url=message.attachments[0].url)
 
-                await u.send(embed=embed, view=view)
+                view = discord.ui.View()
+                view.add_item(
+                    discord.ui.Button(style=discord.ButtonStyle.link, label="Jump To Message",
+                                      url=message.jump_url))
+                view.add_item(
+                    discord.ui.Button(style=discord.ButtonStyle.link, label="Jump To Top",
+                                      url=session_start_msg.jump_url))
+
+                await u.send(content=ping_content, embed=embed, view=view, allowed_mentions=discord.AllowedMentions(users=True))
 
     @commands.command(hidden=True)
     @checks.is_owner()
@@ -456,18 +459,8 @@ class Say(commands.Cog):
             await interaction.response.defer(ephemeral=False)
             await interaction.followup.delete_message("@original")
 
-    async def stop_interaction(self, user):
-        self.session_interaction.remove(user)
-        embed = discord.Embed(
-            title="Session Stopped.",
-            timestamp=discord.utils.utcnow(),
-            color=(await self.bot.get_embed_color(self)),
-            description="I won't send the messages anymore."
-        )
-        await user.send(embed=embed)
-
     async def cog_unload(self):
         log.debug("Unloading cog...")
-        for user in self.interaction:
-            await self.stop_interaction(user)
+        for user in self.session_interaction:
+            await stop_session_interaction(self.bot, self.session_interaction, user)
         close_logger(log)
